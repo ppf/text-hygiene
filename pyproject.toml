@@ -1,5 +1,7 @@
 [build-system]
-requires = ["setuptools>=61"]
+# >=77 for PEP 639: the SPDX string form of `license` below is rejected by older
+# setuptools, so the >=61 floor made the build fail on any resolver that picked one.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]

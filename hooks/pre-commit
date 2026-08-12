@@ -1,31 +1,36 @@
 #!/bin/sh
 # Block invisible Unicode from entering the repo.
 #
-# Python files are delegated to ruff (RUF001-003 confusables, PLE2502 bidirectional)
-# when it is available, so repos already running ruff do not get two divergent sets
-# of diagnostics for the same characters.
+# Reads the STAGED BLOB for each path, never the working tree. Checking the file on
+# disk approves content that is not what git is about to commit: run the fix this
+# hook suggests, commit again without re-staging, and the worktree is clean while the
+# index still carries the character. `git add -p` diverges the same way.
 #
 # Documentation gets the prose profile: docs legitimately contain emoji and other
 # scripts, and the code profile would flag - and on fix, corrupt - a ZWJ emoji
 # sequence in a README. Everything else gets the code profile.
 #
-# --fail-on report, not the default: bidi overrides and NBSP are report-only under
-# prose, so a gate using the default exit status would let Trojan Source into a
-# README. A gate asks "is anything invisible here", not "would clean change it".
-set -e
-
-staged=$(git diff --cached --name-only --diff-filter=ACM)
-[ -n "$staged" ] || exit 0
-
-py_files=$(printf '%s\n' "$staged" | grep '\.py$' || true)
-docs=$(printf '%s\n' "$staged" | grep -Ei '\.(md|markdown|mdx|rst|txt|adoc|tex)$' || true)
-code=$(printf '%s\n' "$staged" | grep -v '\.py$' \
-    | grep -Eiv '\.(md|markdown|mdx|rst|txt|adoc|tex)$' || true)
+# Python files run ruff AND text-hygiene. ruff's RUF001-003 and PLE2502 cover
+# confusables and bidi but detect no zero-width or joiner characters at all, so
+# delegating to it alone left Python sources the least protected files in the repo.
+#
+# --fail-on report, not the default: bidi overrides are report-only under prose, so
+# a gate using the default exit status would let Trojan Source into a README.
+set -eu
 
 status=0
 failed_profiles=""
 saw_actionable=0
 saw_report=0
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+# ACMR, not ACM: git reports `git mv` plus an edit as R, and an R-filtered-out path
+# was never scanned at all.
+git diff --cached --name-only --diff-filter=ACMR -z \
+    | tr '\0' '\n' > "$tmp/paths"
+[ -s "$tmp/paths" ] || exit 0
 
 raise_status() {
     if [ "$1" -gt "$status" ]; then
@@ -33,38 +38,57 @@ raise_status() {
     fi
 }
 
-inspect() {
-    profile=$1
-    shift
+profile_for() {
+    case $1 in
+        *.md|*.MD|*.markdown|*.mdx|*.rst|*.txt|*.adoc|*.tex) echo prose ;;
+        *) echo code ;;
+    esac
+}
+
+check_one() {
+    path=$1
+    profile=$(profile_for "$path")
     rc=0
-    out=$(text-hygiene inspect --profile "$profile" --fail-on report "$@") || rc=$?
-    [ -z "$out" ] || printf '%s\n' "$out"
+    git show ":$path" \
+        | text-hygiene inspect - --label "$path" --profile "$profile" \
+            --fail-on report > "$tmp/out" 2> "$tmp/err" || rc=$?
+
+    if [ "$rc" -ge 2 ]; then
+        # Inputs the tool cannot meaningfully read are skipped, not treated as a
+        # broken tool. Otherwise one PNG, font, or legacy-encoded file blocks every
+        # commit in the repo with no way to comply.
+        if grep -qE 'looks binary|not valid UTF-8|larger than' "$tmp/err"; then
+            echo "pre-commit: skipped $path ($(sed 's/^text-hygiene: //' "$tmp/err"))" >&2
+            return 0
+        fi
+        cat "$tmp/err" >&2
+        raise_status "$rc"
+        return 0
+    fi
+
+    [ ! -s "$tmp/out" ] || cat "$tmp/out"
     if [ "$rc" -eq 1 ]; then
-        # Record the profile that found something, so the fix hint names the right
-        # one per group. A single global profile would tell the user to run
-        # --profile code over their markdown, which is the corruption above.
         case " $failed_profiles " in
             *" $profile "*) ;;
             *) failed_profiles="$failed_profiles $profile" ;;
         esac
         # Split by action so the hint is honest. Telling someone to run `clean` on a
-        # report-only finding sends them in a circle: the command succeeds, changes
-        # nothing, and the commit is still blocked.
-        printf '%s\n' "$out" | grep -q ': \(strip\|replace\): ' && saw_actionable=1
-        printf '%s\n' "$out" | grep -q ': report: ' && saw_report=1
+        # report-only finding sends them in a circle: it succeeds, changes nothing,
+        # and the commit is still blocked.
+        grep -q ': \(strip\|replace\): ' "$tmp/out" && saw_actionable=1
+        grep -q ': report: ' "$tmp/out" && saw_report=1
     fi
     raise_status "$rc"
 }
 
-if [ -n "$code" ]; then
-    # shellcheck disable=SC2086
-    inspect code $code
-fi
-
-if [ -n "$docs" ]; then
-    # shellcheck disable=SC2086
-    inspect prose $docs
-fi
+py_files=""
+while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    check_one "$path"
+    case $path in
+        *.py) py_files="$py_files $path" ;;
+    esac
+done < "$tmp/paths"
 
 if [ -n "$py_files" ] && command -v ruff >/dev/null 2>&1; then
     rc=0
@@ -75,9 +99,6 @@ if [ -n "$py_files" ] && command -v ruff >/dev/null 2>&1; then
         rc=2
     fi
     raise_status "$rc"
-elif [ -n "$py_files" ]; then
-    # shellcheck disable=SC2086
-    inspect code $py_files
 fi
 
 # Anything above 1 is a tool that failed to run - including 127, command not found.
@@ -86,11 +107,11 @@ if [ "$status" -ge 2 ]; then
     exit "$status"
 fi
 if [ "$status" -ne 0 ]; then
-    echo "pre-commit: invisible Unicode found." >&2
+    echo "pre-commit: invisible Unicode found in the staged content." >&2
     if [ "$saw_actionable" -eq 1 ]; then
-        echo "  Fix the strip/replace findings with:" >&2
+        echo "  Fix, then RE-STAGE - the hook reads the index, not the worktree:" >&2
         for profile in $failed_profiles; do
-            echo "    text-hygiene clean --in-place --profile $profile <file>" >&2
+            echo "    text-hygiene clean --in-place --profile $profile F && git add F" >&2
         done
     fi
     if [ "$saw_report" -eq 1 ]; then

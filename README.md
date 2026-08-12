@@ -82,6 +82,9 @@ emoji, Indic, or RTL — where naive stripping corrupts content.
 **`allow` is a side channel, and that is a deliberate cost.** Anything the `prose`
 profile keeps can carry information: a variation selector on each non-Latin letter is
 roughly a bit apiece, and so is the presence or absence of a joiner between two emoji.
+The capacity is bounded — runs of more than two consecutive joiners or variation
+selectors are stripped outright, since the longest such run in Unicode's entire RGI
+emoji set is two — but it is not zero.
 Gate mode does not fail on `allow` and `clean` will not remove it, so a document rich in
 emoji or non-Latin script has invisible capacity this tool deliberately leaves alone —
 that is the price of never corrupting valid content. `--profile code` removes all of it.
@@ -132,17 +135,28 @@ though nothing acts on it.
 ln -sf "$(pwd)/hooks/pre-commit" .git/hooks/pre-commit
 ```
 
+**The hook reads the staged blob, never the working tree.** Checking the file on disk
+approves content git is not about to commit: fix the file, commit again without
+re-staging, and the worktree is clean while the index still carries the character.
+`git add -p` diverges the same way. Every finding is read from `git show :path`.
+
 Documentation (`.md`, `.mdx`, `.rst`, `.txt`, `.adoc`, `.tex`) is checked with `prose`;
 everything else gets `code`. Docs legitimately contain emoji and other scripts, and
 `code` would flag — and on fix, corrupt — a ZWJ emoji sequence in a README.
 
-The hook runs `--fail-on report`, so a bidi override or Hangul filler in a doc is
-blocked even though `clean` leaves it alone under `prose`. Emoji, NBSP and a leading BOM
-are `allow` and pass.
+The hook runs `--fail-on report`, so a bidi override in a doc is blocked even though
+`clean` leaves it alone under `prose`. Emoji, NBSP and a leading BOM are `allow` and
+pass.
 
-Python files are delegated to ruff (RUF001-003, PLE2502) when it is installed, so repos
-already running ruff don't get two divergent sets of diagnostics for the same
-characters.
+Python files run ruff **in addition to** text-hygiene, not instead of it. ruff's
+RUF001-003 and PLE2502 cover confusables and bidi but detect no zero-width or joiner
+characters at all, so delegating to ruff alone left Python sources the least protected
+files in the repo.
+
+Binary, oversize and non-UTF-8 files are **skipped with a notice**, not treated as tool
+failures — otherwise one PNG blocks every commit in the repo with no way to comply.
+Renames are included (`--diff-filter=ACMR`): git classifies `git mv` plus an edit as
+`R`, and an `R`-filtered-out path was never scanned at all.
 
 The repo passes its own hook, and a test enforces that source files contain no *literal*
 invisible characters — escapes only. Nobody can review a `U+200D` they cannot see.

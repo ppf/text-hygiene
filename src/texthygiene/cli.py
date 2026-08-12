@@ -25,21 +25,31 @@ class InputError(Exception):
     pass
 
 
-def _read(path: Path, max_size: int) -> str:
-    if path.stat().st_size > max_size:
-        raise InputError(f"{path}: larger than {max_size} bytes (raise --max-size)")
-    data = path.read_bytes()
+def _decode(data: bytes, label: str, max_size: int) -> str:
+    """Shared by file and stdin input, so both reject the same things the same way.
+
+    Piped input used to skip these checks entirely and surface a bare
+    UnicodeDecodeError, which callers could not distinguish from a crash.
+    """
+    if len(data) > max_size:
+        raise InputError(f"{label}: larger than {max_size} bytes (raise --max-size)")
     if b"\x00" in data[:BINARY_SNIFF_BYTES]:
-        raise InputError(f"{path}: looks binary")
+        raise InputError(f"{label}: looks binary")
     try:
         # A UTF-8 BOM decodes to U+FEFF and is kept in the string, so a leading BOM
         # can be reported and re-emitted rather than silently dropped.
         return data.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise InputError(f"{path}: not valid UTF-8 ({exc.reason})") from exc
+        raise InputError(f"{label}: not valid UTF-8 ({exc.reason})") from exc
 
 
-def _load_all(names: list[str], max_size: int) -> list[tuple[str, str]]:
+def _read(path: Path, max_size: int) -> str:
+    if path.stat().st_size > max_size:
+        raise InputError(f"{path}: larger than {max_size} bytes (raise --max-size)")
+    return _decode(path.read_bytes(), str(path), max_size)
+
+
+def _load_all(names: list[str], max_size: int, label: str = "") -> list[tuple[str, str]]:
     """Read every input up front, as (label, text).
 
     Loading before any write means an unreadable file part-way through an
@@ -48,7 +58,9 @@ def _load_all(names: list[str], max_size: int) -> list[tuple[str, str]]:
     loaded = []
     for name in names:
         if name == "-":
-            loaded.append(("<stdin>", sys.stdin.read()))
+            stdin_label = label or "<stdin>"
+            loaded.append((stdin_label,
+                           _decode(sys.stdin.buffer.read(), stdin_label, max_size)))
         else:
             loaded.append((name, _read(Path(name), max_size)))
     return loaded
@@ -111,7 +123,7 @@ def _inspect(args) -> int:
     since clean will never remove those and the gate would be unsatisfiable.
     """
     results = [(label, scan(text, args.profile))
-               for label, text in _load_all(args.files, args.max_size)]
+               for label, text in _load_all(args.files, args.max_size, args.label)]
     _emit(results, args, sys.stdout)
     exempt = UNMODIFIED if args.fail_on == "actionable" else (ALLOW,)
     failing = [f for _, findings in results for f in findings
@@ -171,6 +183,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     inspector = sub.add_parser("inspect", parents=[common],
                                help="report findings; exit 1 per --fail-on")
+    inspector.add_argument("--label", default="",
+                           help="path to report for stdin input, so a caller "
+                                "streaming a file's content can name it")
     inspector.add_argument("--fail-on", choices=("actionable", "report"),
                            default="actionable",
                            help="actionable: only what clean would change (default). "

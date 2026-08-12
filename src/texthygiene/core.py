@@ -65,6 +65,14 @@ class Finding:
         }
 
 
+# A subdivision flag carries an ISO 3166-2 code: every tag sequence in the RGI set
+# is 5 lowercase alphanumerics (gbeng, gbsct, gbwls). Accepting any tag run made the
+# construct an unbounded silent carrier - wrap arbitrary text in the flag base and
+# terminator and scan returned nothing at all, because protected indices are skipped
+# before they are ever classified. These bounds still admit a future RGI flag.
+MAX_TAG_PAYLOAD = 6
+
+
 def _flag_sequence_indices(text: str) -> set[int]:
     """Indices belonging to a well-formed emoji tag sequence, which stays intact.
 
@@ -78,7 +86,10 @@ def _flag_sequence_indices(text: str) -> set[int]:
             j = i + 1
             while j < n and ord(text[j]) in TAG_SPEC:
                 j += 1
-            if j > i + 1 and j < n and ord(text[j]) == TAG_TERM:
+            payload = [chr(ord(c) - 0xE0000) for c in text[i + 1:j]]
+            if (2 <= len(payload) <= MAX_TAG_PAYLOAD
+                    and all(c.isalnum() and c.islower() and c.isascii() for c in payload)
+                    and j < n and ord(text[j]) == TAG_TERM):
                 protected.update(range(i, j + 1))
                 i = j + 1
                 continue
@@ -87,7 +98,7 @@ def _flag_sequence_indices(text: str) -> set[int]:
 
 
 def _resolve(category: str, profile: str, codepoint: int, leading: bool,
-             between_ascii: bool) -> tuple[str | None, str]:
+             between_ascii: bool, oversized_run: bool = False) -> tuple[str | None, str]:
     """Return (action, replacement) for one classified character."""
     if category == "bom":
         # A leading BOM is an encoding artifact, not a carrier; only mid-file
@@ -107,7 +118,7 @@ def _resolve(category: str, profile: str, codepoint: int, leading: bool,
         return STRIP, ""
 
     if category in CONTEXT_SENSITIVE:
-        if profile == "code":
+        if profile == "code" or oversized_run:
             return STRIP, ""
         # Surviving the adjacency test is positive evidence the character is doing
         # a job here, so this is ALLOW rather than REPORT.
@@ -161,7 +172,56 @@ def _survivors(text: str, classes: list[str | None], protected: set[int],
     return out
 
 
-def _between_ascii(survivors: list[str | None], i: int) -> bool:
+# The longest run of consecutive context-sensitive characters anywhere in Unicode's
+# RGI emoji set is 2 - VS16 followed by ZWJ, as in the heart-on-fire sequence. A real
+# ZWJ sequence never repeats a joiner and a variation selector never repeats, so a
+# longer run is not doing typographic work. Without this bound a single non-ASCII
+# neighbour made an arbitrarily long carrier run ALLOW, which no gate blocks and
+# `clean` will not remove: ZWJ and ZWNJ alone are a complete binary alphabet.
+MAX_CONTEXT_RUN = 2
+
+
+def _context_run_lengths(classes: list[str | None], protected: set[int]) -> list[int]:
+    """For each index, the length of the maximal context-sensitive run it sits in."""
+    lengths = [0] * len(classes)
+    start = None
+    for i in range(len(classes) + 1):
+        inside = (i < len(classes) and classes[i] in CONTEXT_SENSITIVE
+                  and i not in protected)
+        if inside and start is None:
+            start = i
+        elif not inside and start is not None:
+            for j in range(start, i):
+                lengths[j] = i - start
+            start = None
+    return lengths
+
+
+def _nearest_surviving(survivors: list[str | None]) -> tuple[list, list]:
+    """Nearest surviving character to the left and right of every index.
+
+    Two linear passes rather than an outward walk per character: the walk was
+    quadratic, and a run of carriers is exactly the input that triggers it - 16k
+    joiners took ~9s and the 10 MiB input limit allowed a payload that never
+    returned, hanging any hook that ran over it.
+    """
+    n = len(survivors)
+    left: list[str | None] = [None] * n
+    seen = None
+    for i in range(n):
+        left[i] = seen
+        if survivors[i] is not None:
+            seen = survivors[i]
+    right: list[str | None] = [None] * n
+    seen = None
+    for i in range(n - 1, -1, -1):
+        right[i] = seen
+        if survivors[i] is not None:
+            seen = survivors[i]
+    return left, right
+
+
+def _between_ascii(left: str | None, right: str | None) -> bool:
     """Whether the nearest surviving characters on both sides are ASCII.
 
     Neighbours come from the survivor view rather than the raw text, so a character
@@ -170,15 +230,7 @@ def _between_ascii(survivors: list[str | None], i: int) -> bool:
     what survives is also what makes cleaning idempotent: a second pass sees the
     neighbours the first pass already assumed.
     """
-    def nearest(step: int) -> str | None:
-        j = i + step
-        while 0 <= j < len(survivors):
-            if survivors[j] is not None:
-                return survivors[j]
-            j += step
-        return None
-
-    return all(n is None or ord(n) < 128 for n in (nearest(-1), nearest(1)))
+    return all(n is None or ord(n) < 128 for n in (left, right))
 
 
 def _line_starts(text: str) -> list[int]:
@@ -209,11 +261,14 @@ def scan(text: str, profile: str = "prose") -> list[Finding]:
                                leading=(i == 0), between_ascii=False)
 
     survivors = _survivors(text, classes, protected, verdicts)
+    left, right = _nearest_surviving(survivors)
+    runs = _context_run_lengths(classes, protected)
     for i, category in enumerate(classes):
         if category in CONTEXT_SENSITIVE and i not in protected:
             verdicts[i] = _resolve(category, profile, ord(text[i]),
                                    leading=(i == 0),
-                                   between_ascii=_between_ascii(survivors, i))
+                                   between_ascii=_between_ascii(left[i], right[i]),
+                                   oversized_run=runs[i] > MAX_CONTEXT_RUN)
 
     starts = _line_starts(text)
     findings = []
