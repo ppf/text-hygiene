@@ -107,7 +107,7 @@ def _resolve(category: str, profile: str, codepoint: int, leading: bool,
 
     # Unreachable while every classify() output has a branch above. Raising rather
     # than returning None stops a future class from being detected and then
-    # silently ignored; test_core.py asserts exhaustiveness.
+    # silently ignored.
     raise AssertionError(f"unhandled character class: {category}")
 
 

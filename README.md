@@ -19,7 +19,7 @@ cat draft.md | text-hygiene clean -
 |---|---|---|
 | Intent | human text | source, configs, commit messages |
 | Format characters (`Cf`) | strip | strip |
-| Joiners, variation selectors | strip only between ASCII | strip |
+| Joiners, variation selectors, zero-width | strip only between ASCII | strip |
 | Bidi controls | report | strip |
 | NBSP and friends | report | → ASCII space |
 | Arabic format characters | kept | strip |
@@ -44,8 +44,16 @@ expose. It doesn't: every script that gives these characters meaning is non-ASCI
 joiner is stripped only when **both** neighbours are ASCII. The rule can under-strip but
 never corrupt.
 
-Carrier characters are transparent when looking for a neighbour, so doubling a ZWJ
-cannot evade the test — and that same property is what makes cleaning idempotent.
+The same rule covers characters that are carriers in one place and meaningful in
+another — `U+2060` WORD JOINER is real non-breaking glue, `U+2061`–`U+2064` are semantic
+in mathematical markup, and a zero-width space is a legitimate line-break hint in CJK.
+
+**Neighbours are read from what survives cleaning, not from the raw text.** Otherwise a
+character that is itself about to be removed — a mid-file BOM, a C1 control — counts as
+a non-ASCII neighbour and shields the carrier next to it, so one pass returns text the
+tool calls clean while a live ZWJ remains. Deciding against the survivor view also makes
+doubling a carrier useless and makes cleaning idempotent: the second pass sees exactly
+the neighbours the first pass assumed.
 
 Verified against all 3781 fully-qualified RGI emoji sequences from Unicode's
 `emoji-test.txt`: every one survives the `prose` profile byte-identical, including
@@ -76,6 +84,10 @@ emoji, Indic, or RTL — where naive stripping corrupts content.
   `U+2028`/`U+2029`/`U+0085`, so reported lines would disagree with your editor on
   exactly the files this tool inspects.
 - Non-UTF-8 input **fails loudly** rather than decoding with replacement.
+- `--json` emits **one document** covering every input, so passing several paths still
+  produces something `json.loads` can read.
+- `clean --in-place` reads every input before writing any of them, so a bad file in the
+  middle of the list fails before the first file is modified.
 - Binary files (NUL in the first 8 KiB) are skipped; files over `--max-size` (10 MiB)
   are refused.
 - `--in-place` preserves mode and mtime, writes through symlinks to the real file, and
