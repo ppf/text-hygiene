@@ -3,6 +3,8 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Global gitignore excludes .github; this repo needs its workflows tracked.
+# Defensive: some developers ignore .github globally, which silently drops CI config
+# from `git add -A` with no error. Kept so a contributor with that setting can still
+# add workflow files.
 !.github/
 !.github/**
