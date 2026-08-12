@@ -1,0 +1,38 @@
+#!/bin/sh
+# Block invisible Unicode from entering the repo.
+#
+# Python files are delegated to ruff (RUF001-003 confusables, PLE2502 bidirectional)
+# when it is available, so repos already running ruff do not get two divergent sets
+# of diagnostics for the same characters.
+set -e
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -n "$staged" ] || exit 0
+
+py_files=$(printf '%s\n' "$staged" | grep '\.py$' || true)
+other=$(printf '%s\n' "$staged" | grep -v '\.py$' || true)
+
+status=0
+
+if [ -n "$other" ]; then
+    # shellcheck disable=SC2086
+    text-hygiene inspect --profile code $other || status=$?
+fi
+
+if [ -n "$py_files" ] && command -v ruff >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    ruff check --select RUF001,RUF002,RUF003,PLE2502 $py_files || status=1
+elif [ -n "$py_files" ]; then
+    # shellcheck disable=SC2086
+    text-hygiene inspect --profile code $py_files || status=$?
+fi
+
+if [ "$status" -eq 2 ]; then
+    echo "pre-commit: text-hygiene failed to run" >&2
+    exit 2
+fi
+if [ "$status" -ne 0 ]; then
+    echo "pre-commit: invisible Unicode found. Fix with:" >&2
+    echo "  text-hygiene clean --in-place --profile code <file>" >&2
+    exit 1
+fi
