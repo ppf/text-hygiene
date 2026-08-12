@@ -70,8 +70,13 @@ of) text-hygiene on Python files, and skips binary/oversize/non-UTF-8 files with
 notice rather than blocking the commit.
 
 ```bash
+git config core.hooksPath          # if this prints a path, .git/hooks is IGNORED
 ln -sf "$(pwd)/hooks/pre-commit" .git/hooks/pre-commit
 ```
+
+If `core.hooksPath` is set, installing into `.git/hooks` silently does nothing. Put
+the hook in that directory instead, or give the repo its own with
+`git config core.hooksPath .githooks`.
 
 If it blocks a commit, fix **and re-stage** — it reads the index, so cleaning the
 working tree alone changes nothing it can see.

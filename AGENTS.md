@@ -67,5 +67,9 @@ Exit 0 means "nothing to fix", not "nothing found": use `--fail-on report`
 to gate on bidi controls too.
 ```
 
-Optionally install the pre-commit gate:
-`ln -sf "$(path-to)/hooks/pre-commit" .git/hooks/pre-commit`
+Optionally install the pre-commit gate. Check `git config core.hooksPath` first: if it
+prints a path, `.git/hooks` is ignored and the symlink silently never runs.
+
+```bash
+ln -sf "$(path-to)/hooks/pre-commit" .git/hooks/pre-commit    # hooksPath unset
+```

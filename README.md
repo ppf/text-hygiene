@@ -132,7 +132,17 @@ though nothing acts on it.
 ## Pre-commit hook
 
 ```bash
+# Check this first: a global core.hooksPath REPLACES .git/hooks, so the symlink
+# below would silently never run.
+git config core.hooksPath
+
+# unset -> the standard path works
 ln -sf "$(pwd)/hooks/pre-commit" .git/hooks/pre-commit
+
+# set -> either add the hook to that directory (applies to every repo), or give
+# this repo its own hooks dir, which overrides the global one for this repo only:
+mkdir -p .githooks && ln -sf "$(pwd)/hooks/pre-commit" .githooks/pre-commit
+git config core.hooksPath .githooks
 ```
 
 **The hook reads the staged blob, never the working tree.** Checking the file on disk
