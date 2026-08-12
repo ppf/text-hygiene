@@ -18,9 +18,26 @@ PROFILES = ("prose", "code")
 STRIP = "strip"
 REPLACE = "replace"
 REPORT = "report"
+ALLOW = "allow"
+
+# REPORT and ALLOW both leave the character alone, for different reasons, and a
+# commit gate has to tell them apart. ALLOW means context proved the character
+# legitimate here - a joiner inside an emoji sequence, NBSP in prose, a leading BOM.
+# REPORT means policy declines to modify it but it is still worth a human look - a
+# bidi override, a Hangul filler. A gate that fails on ALLOW cannot be satisfied,
+# because `clean` will not remove those; a gate that ignores REPORT lets Trojan
+# Source into a README.
+UNMODIFIED = (REPORT, ALLOW)
 
 # Classes whose verdict depends on what survives around them.
-CONTEXT_SENSITIVE = frozenset({"joiner", "variation", "zero_width"})
+#
+# zero_width is deliberately NOT here. Making it context-sensitive means a single
+# non-ASCII character shields every carrier near it: an em dash, a curly quote or
+# any non-Latin script is enough, and LLM output is full of the first two. Appending
+# one em dash then hides an unlimited run of zero-width spaces. That is the tool's
+# primary use case, so the class is stripped unconditionally instead - see
+# ZERO_WIDTH in chars.py for what that costs.
+CONTEXT_SENSITIVE = frozenset({"joiner", "variation"})
 
 
 @dataclass(frozen=True)
@@ -75,9 +92,9 @@ def _resolve(category: str, profile: str, codepoint: int, leading: bool,
     if category == "bom":
         # A leading BOM is an encoding artifact, not a carrier; only mid-file
         # occurrences are suspicious.
-        return (REPORT, "") if leading else (STRIP, "")
+        return (ALLOW, "") if leading else (STRIP, "")
 
-    if category in ("soft_hyphen", "control", "tag"):
+    if category in ("zero_width", "soft_hyphen", "control", "tag"):
         return STRIP, ""
 
     if category == "other_format":
@@ -88,21 +105,25 @@ def _resolve(category: str, profile: str, codepoint: int, leading: bool,
     if category in CONTEXT_SENSITIVE:
         if profile == "code":
             return STRIP, ""
-        return (STRIP, "") if between_ascii else (REPORT, "")
+        # Surviving the adjacency test is positive evidence the character is doing
+        # a job here, so this is ALLOW rather than REPORT.
+        return (STRIP, "") if between_ascii else (ALLOW, "")
 
     if category == "bidi":
-        # Report-only in prose: stripping bidi from genuinely RTL text is itself a
+        # Not stripped in prose: removing bidi from genuinely RTL text is itself a
         # silent rendering change. No balance analysis - balance is attacker
-        # controlled, so it cannot gate a security decision.
+        # controlled, so it cannot gate a security decision. REPORT, not ALLOW:
+        # an unannounced direction override is the Trojan Source attack.
         return (STRIP, "") if profile == "code" else (REPORT, "")
 
     if category == "space":
-        return (REPLACE, " ") if profile == "code" else (REPORT, "")
+        return (REPLACE, " ") if profile == "code" else (ALLOW, "")
 
     if category == "line_sep":
-        return (REPLACE, "\n") if profile == "code" else (REPORT, "")
+        return (REPLACE, "\n") if profile == "code" else (ALLOW, "")
 
     if category in ("hangul_filler", "cgj"):
+        # Blank-rendering characters with no typographic role; a gate should say so.
         return (STRIP, "") if profile == "code" else (REPORT, "")
 
     # Unreachable while every classify() output has a branch above. Raising rather

@@ -36,6 +36,34 @@ def test_report_only_findings_do_not_fail(tmp_path, capsys):
     assert main(["inspect", str(emoji), "--profile", "code"]) == EXIT_FINDINGS
 
 
+def test_fail_on_report_gates_advisory_findings(tmp_path, capsys):
+    """A commit gate asks "is anything invisible here", not "would clean change it".
+
+    Bidi overrides are report-only under prose, so the default exit status lets
+    Trojan Source into a README. --fail-on report is what the hook uses.
+    """
+    trojan = write(tmp_path, "readme.md", "safe\u202e code")
+    assert main(["inspect", str(trojan), "--profile", "prose"]) == EXIT_CLEAN
+    assert main(["inspect", str(trojan), "--profile", "prose",
+                 "--fail-on", "report"]) == EXIT_FINDINGS
+
+
+def test_fail_on_report_still_passes_genuinely_clean_files(tmp_path):
+    ok = write(tmp_path, "ok.md", "nothing to see here\n")
+    assert main(["inspect", str(ok), "--fail-on", "report"]) == EXIT_CLEAN
+
+
+def test_in_place_preflights_hardlinks_before_writing_anything(tmp_path):
+    """The hard-link guard is a write-time check the tool raises itself, so it has
+    to run in the pre-flight or the run half-applies."""
+    first = write(tmp_path, "first.txt", f"a{ZWSP}b")
+    linked = write(tmp_path, "linked.txt", f"c{ZWSP}d")
+    os.link(linked, tmp_path / "hard.txt")
+    before = first.read_bytes()
+    assert main(["clean", str(first), str(linked), "--in-place"]) == EXIT_ERROR
+    assert first.read_bytes() == before, "first file written despite a later failure"
+
+
 def test_error_exit_code_is_distinct_from_findings(tmp_path, capsys):
     """A crash must not look like a finding to the pre-commit hook."""
     assert main(["inspect", str(tmp_path / "missing.txt")]) == EXIT_ERROR

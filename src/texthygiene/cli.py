@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import TextIO
 
-from .core import PROFILES, REPORT, Finding, clean, scan, summarize
+from .core import ALLOW, PROFILES, UNMODIFIED, Finding, clean, scan, summarize
 
 EXIT_CLEAN = 0
 EXIT_FINDINGS = 1
@@ -42,9 +42,8 @@ def _read(path: Path, max_size: int) -> str:
 def _load_all(names: list[str], max_size: int) -> list[tuple[str, str]]:
     """Read every input up front, as (label, text).
 
-    Loading before any write means a bad file in the middle of an --in-place run
-    fails before the first file is modified, rather than leaving the run half
-    applied with nothing saying which half.
+    Loading before any write means an unreadable file part-way through an
+    --in-place run fails before the first file is modified.
     """
     loaded = []
     for name in names:
@@ -55,10 +54,18 @@ def _load_all(names: list[str], max_size: int) -> list[tuple[str, str]]:
     return loaded
 
 
-def _write_in_place(path: Path, text: str) -> None:
+def _check_writable(path: Path) -> None:
+    """Pre-flight the checks this tool raises itself, before anything is written."""
     target = Path(os.path.realpath(path))
     if target.stat().st_nlink > 1:
         raise InputError(f"{target}: has hard links, refusing to replace")
+    if not os.access(target, os.W_OK) or not os.access(target.parent, os.W_OK):
+        raise InputError(f"{target}: not writable")
+
+
+def _write_in_place(path: Path, text: str) -> None:
+    target = Path(os.path.realpath(path))
+    _check_writable(target)
     fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
@@ -95,17 +102,20 @@ def _emit(results: list[tuple[str, list[Finding]]], args, stream: TextIO) -> Non
 
 
 def _inspect(args) -> int:
-    """Exit status answers "would `clean` modify these files?".
+    """Exit status answers whichever question --fail-on selects.
 
-    Report-only findings are advisory - the profile has already decided not to
-    touch them - so they print without failing. Otherwise a file whose invisible
-    characters are all legitimate, such as an emoji fixture, could never pass.
+    `actionable` (the default) asks "would clean modify this?". A commit gate asks
+    the wider "is anything here worth a human look?", which additionally catches
+    REPORT findings - a bidi override in a README is exactly what a gate exists to
+    stop, and clean leaves it alone under prose. Neither setting fails on ALLOW,
+    since clean will never remove those and the gate would be unsatisfiable.
     """
     results = [(label, scan(text, args.profile))
                for label, text in _load_all(args.files, args.max_size)]
     _emit(results, args, sys.stdout)
-    actionable = any(f.action != REPORT for _, findings in results for f in findings)
-    return EXIT_FINDINGS if actionable else EXIT_CLEAN
+    gated = UNMODIFIED if args.fail_on == "actionable" else (ALLOW,)
+    failing = [f for _, findings in results for f in findings if f.action not in gated]
+    return EXIT_FINDINGS if failing else EXIT_CLEAN
 
 
 def _clean(args) -> int:
@@ -115,16 +125,31 @@ def _clean(args) -> int:
         raise InputError("--in-place cannot be used with stdin")
 
     loaded = _load_all(args.files, args.max_size)
+    if args.in_place:
+        for name in args.files:
+            _check_writable(Path(name))
+
     results = []
+    written: list[str] = []
     for (label, text), name in zip(loaded, args.files, strict=True):
         cleaned, findings = clean(text, args.profile)
         results.append((label, findings))
-        if args.in_place:
-            _write_in_place(Path(name), cleaned)
-        elif args.output:
-            Path(args.output).write_text(cleaned, encoding="utf-8", newline="")
-        else:
-            sys.stdout.write(cleaned)
+        try:
+            if args.in_place:
+                _write_in_place(Path(name), cleaned)
+                written.append(name)
+            elif args.output:
+                Path(args.output).write_text(cleaned, encoding="utf-8", newline="")
+            else:
+                sys.stdout.write(cleaned)
+        except OSError as exc:
+            # Pre-flight cannot rule out ENOSPC or a race, so say plainly which
+            # files were already replaced rather than leaving the run ambiguous.
+            if written:
+                sys.stderr.write(
+                    f"text-hygiene: already rewrote {', '.join(written)} "
+                    f"before failing on {name}\n")
+            raise InputError(f"{name}: {exc}") from exc
 
     if args.stats or args.json:
         _emit(results, args, sys.stderr)
@@ -143,8 +168,13 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--max-size", type=int, default=DEFAULT_MAX_SIZE)
 
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("inspect", parents=[common],
-                   help="report findings; exit 1 if any are actionable")
+    inspector = sub.add_parser("inspect", parents=[common],
+                               help="report findings; exit 1 per --fail-on")
+    inspector.add_argument("--fail-on", choices=("actionable", "report"),
+                           default="actionable",
+                           help="actionable: only what clean would change (default). "
+                                "report: also flag characters left in place that "
+                                "still warrant a look, for use as a gate.")
     cleaner = sub.add_parser("clean", parents=[common], help="write cleaned text")
     destination = cleaner.add_mutually_exclusive_group()
     destination.add_argument("-o", "--output")

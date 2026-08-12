@@ -8,6 +8,7 @@ dependencies.
 pipx install .            # or: pip install -e .
 
 text-hygiene inspect draft.md              # exit 0 nothing to fix / 1 actionable / 2 error
+text-hygiene inspect --fail-on report *.md # gate mode: also fail on flagged-but-kept
 text-hygiene clean draft.md -o out.md
 text-hygiene clean --in-place --profile code src/*.py
 cat draft.md | text-hygiene clean -
@@ -19,9 +20,10 @@ cat draft.md | text-hygiene clean -
 |---|---|---|
 | Intent | human text | source, configs, commit messages |
 | Format characters (`Cf`) | strip | strip |
-| Joiners, variation selectors, zero-width | strip only between ASCII | strip |
+| Zero-width (incl. WORD JOINER) | strip | strip |
+| Joiners, variation selectors | strip only between ASCII | strip |
 | Bidi controls | report | strip |
-| NBSP and friends | report | → ASCII space |
+| NBSP and friends | allow | → ASCII space |
 | Arabic format characters | kept | strip |
 | Emoji tag sequences | kept | kept |
 
@@ -31,11 +33,12 @@ nothing invisible is ever legitimate.
 ## How it decides
 
 **Scope is derived, not curated.** Anything with General_Category `Cf` is in scope
-automatically, so new Unicode versions need no code change. This matters more than it
-sounds: a list built from the obvious suspects misses 54 of the 170 `Cf` codepoints in
-UCD 16.0, including `U+206A–206F` and `U+FFF9–FFFB`. Non-`Cf` invisibles that the
-category rule cannot catch — Hangul fillers, CGJ, variation selectors — are listed
-explicitly.
+automatically, so new Unicode versions need no code change. The explicit tables name
+only the classes needing distinct handling; they cover well under half the `Cf`
+codepoints in UCD 16.0, and the rest — `U+206A–206F`, `U+FFF9–FFFB` and friends — fall
+through to the derived branch rather than being missed. A test pins that no `Cf`
+codepoint goes unclassified. Non-`Cf` invisibles the category rule cannot catch — Hangul
+fillers, CGJ, variation selectors — are listed explicitly.
 
 **Context comes from ASCII adjacency, not script detection.** ZWJ is a steganography
 carrier in `Hel<ZWJ>lo` and load-bearing in `👨‍👩‍👧` and `क्‍ष`. Telling those apart
@@ -44,16 +47,20 @@ expose. It doesn't: every script that gives these characters meaning is non-ASCI
 joiner is stripped only when **both** neighbours are ASCII. The rule can under-strip but
 never corrupt.
 
-The same rule covers characters that are carriers in one place and meaningful in
-another — `U+2060` WORD JOINER is real non-breaking glue, `U+2061`–`U+2064` are semantic
-in mathematical markup, and a zero-width space is a legitimate line-break hint in CJK.
-
 **Neighbours are read from what survives cleaning, not from the raw text.** Otherwise a
 character that is itself about to be removed — a mid-file BOM, a C1 control — counts as
 a non-ASCII neighbour and shields the carrier next to it, so one pass returns text the
 tool calls clean while a live ZWJ remains. Deciding against the survivor view also makes
 doubling a carrier useless and makes cleaning idempotent: the second pass sees exactly
 the neighbours the first pass assumed.
+
+**Adjacency applies to joiners and variation selectors only — not to zero-width
+characters**, which are stripped unconditionally. Extending it there was a mistake worth
+recording: it meant any single non-ASCII character shielded every carrier beside it, so
+one em dash — which LLM output is full of — hid an unlimited run of zero-width spaces,
+and *all* non-Latin prose became unprotected. The cost of stripping unconditionally is
+that `U+2060` WORD JOINER, the invisible maths operators, and a CJK line-break hint go
+with it. That loses a rendering hint; the alternative lost the tool's whole purpose.
 
 Verified against all 3781 fully-qualified RGI emoji sequences from Unicode's
 `emoji-test.txt`: every one survives the `prose` profile byte-identical, including
@@ -74,11 +81,19 @@ emoji, Indic, or RTL — where naive stripping corrupts content.
 
 ## Behaviour worth knowing
 
-- **Exit status answers "would `clean` modify this file?"** Report-only findings still
-  print, but exit 0 — the profile has already decided not to touch them. Otherwise a
-  file whose invisible characters are all legitimate, like an emoji fixture or a
-  document containing RTL, could never pass the hook.
-- A **leading BOM** is an encoding artifact: preserved and reported. A mid-file `U+FEFF`
+- **Findings carry one of four actions.** `strip` and `replace` are what `clean`
+  applies. The other two both leave the character alone, for different reasons, and a
+  commit gate has to tell them apart:
+  - `allow` — context proved it legitimate here: a joiner inside an emoji sequence,
+    NBSP in prose, a leading BOM. Never fails, under either `--fail-on`.
+  - `report` — policy declines to modify it, but it still warrants a look: a bidi
+    override, a Hangul filler.
+- **`inspect --fail-on`** picks the question the exit status answers. `actionable`
+  (default) means "would `clean` change this?". `report` is gate mode and also fails on
+  `report` findings — without it a Trojan Source bidi override commits into a README,
+  since `clean` won't touch it under prose. Neither setting fails on `allow`, or the
+  gate could never be satisfied.
+- A **leading BOM** is an encoding artifact: preserved and allowed. A mid-file `U+FEFF`
   is a carrier: stripped.
 - Line numbers use `split("\n")`, not `splitlines()` — the latter also breaks on
   `U+2028`/`U+2029`/`U+0085`, so reported lines would disagree with your editor on
@@ -86,8 +101,10 @@ emoji, Indic, or RTL — where naive stripping corrupts content.
 - Non-UTF-8 input **fails loudly** rather than decoding with replacement.
 - `--json` emits **one document** covering every input, so passing several paths still
   produces something `json.loads` can read.
-- `clean --in-place` reads every input before writing any of them, so a bad file in the
-  middle of the list fails before the first file is modified.
+- `clean --in-place` reads every input, then pre-flights hard-link and writability
+  checks on all of them, before writing anything. A write that fails anyway (ENOSPC, a
+  race) names on stderr which files were already replaced — it does not pretend the run
+  was atomic.
 - Binary files (NUL in the first 8 KiB) are skipped; files over `--max-size` (10 MiB)
   are refused.
 - `--in-place` preserves mode and mtime, writes through symlinks to the real file, and
@@ -99,9 +116,13 @@ emoji, Indic, or RTL — where naive stripping corrupts content.
 ln -sf "$(pwd)/hooks/pre-commit" .git/hooks/pre-commit
 ```
 
-Documentation (`.md`, `.rst`, `.txt`, `.adoc`) is checked with `prose`; everything else
-gets `code`. Docs legitimately contain emoji and other scripts, and `code` would flag —
-and on fix, corrupt — a ZWJ emoji sequence in a README.
+Documentation (`.md`, `.mdx`, `.rst`, `.txt`, `.adoc`, `.tex`) is checked with `prose`;
+everything else gets `code`. Docs legitimately contain emoji and other scripts, and
+`code` would flag — and on fix, corrupt — a ZWJ emoji sequence in a README.
+
+The hook runs `--fail-on report`, so a bidi override or Hangul filler in a doc is
+blocked even though `clean` leaves it alone under `prose`. Emoji, NBSP and a leading BOM
+are `allow` and pass.
 
 Python files are delegated to ruff (RUF001-003, PLE2502) when it is installed, so repos
 already running ruff don't get two divergent sets of diagnostics for the same
@@ -120,8 +141,8 @@ cleaned, findings = clean(text, "code")    # clean is apply(scan(...))
 ```
 
 `clean` is defined in terms of `scan`, so the context rules exist in exactly one place.
-Findings with action `strip`/`replace` correspond 1:1 to modifications; findings with
-action `report` never alter the text.
+Findings with action `strip`/`replace` correspond 1:1 to modifications; `report` and
+`allow` never alter the text.
 
 ## Tests
 

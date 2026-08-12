@@ -7,11 +7,13 @@ a second pass produced different output. A mid-file BOM and a C1 control both di
 it.
 """
 
+from itertools import product
+
 import pytest
 
 from texthygiene import clean, scan
 from texthygiene.chars import classify
-from texthygiene.core import CONTEXT_SENSITIVE, REPORT
+from texthygiene.core import CONTEXT_SENSITIVE, UNMODIFIED
 
 CARRIERS = {
     "zwj": "\u200d",
@@ -57,7 +59,7 @@ def test_one_pass_leaves_no_actionable_carrier():
     for carrier in CARRIERS.values():
         for shield in DISAPPEARING.values():
             cleaned, _ = clean(f"a{carrier}{shield}b", "prose")
-            leftover = [f for f in scan(cleaned, "prose") if f.action != REPORT]
+            leftover = [f for f in scan(cleaned, "prose") if f.action not in UNMODIFIED]
             assert leftover == [], f"{cleaned!r} still has {leftover}"
 
 
@@ -66,11 +68,21 @@ def test_one_pass_leaves_no_actionable_carrier():
     "1\ufe0f⃣",                                 # keycap, ASCII base
     "\U0001F469\U0001F3FD\u200d\U0001F680",          # skin-tone modifier
     "क्\u200dष",                      # Devanagari conjunct
-    "café\u2060bar",                            # word joiner as real glue
-    "日\u200b本",                            # CJK line-break hint
 ])
 def test_semantic_uses_survive_prose(text):
     assert clean(text, "prose")[0] == text
+
+
+@pytest.mark.parametrize("shield", ["\u2014", "\u2019", "\U0001F44D", "\u043f", "\u00e9"])
+def test_one_non_ascii_char_cannot_shield_a_zero_width_run(shield):
+    """An em dash, curly quote, emoji or non-Latin letter must not hide a payload.
+
+    Making zero_width context-sensitive meant appending one such character protected
+    an unlimited run of zero-width spaces, in the profile that is the tool's main use.
+    """
+    text = "hello" + "\u200b" * 20 + shield
+    cleaned, _ = clean(text, "prose")
+    assert "\u200b" not in cleaned
 
 
 def test_context_sensitive_names_are_real_classes():
@@ -96,3 +108,41 @@ def _one_codepoint_per_class(classes):
         if len(seen) == len(classes):
             break
     return seen.values()
+
+
+# Exhaustive sweep over short sequences. The hand-picked grid above checks one
+# shield beside one carrier; this covers runs, both-side shields, boundaries and
+# protected-sequence adjacency without anyone having to think of each case.
+ALPHABET = [
+    "a", "\u00e9",                          # ASCII and non-ASCII letters
+    "\u200b", "\u200d", "\ufe0f",            # zero width, joiner, variation selector
+    "\ufeff", "\u00a0", "\u2028",            # BOM, NBSP, line separator
+    "\u202e", "\u3164", "\u0086",            # bidi override, hangul filler, C1 control
+    "\U000e0067", "\u00ad", "\u0600",        # tag char, soft hyphen, Arabic format
+    "\U0001F3F4", "\U000e007f", "\u2060",    # flag base, tag terminator, word joiner
+]
+
+
+@pytest.mark.parametrize("profile", ["prose", "code"])
+def test_exhaustive_short_sequences_reach_a_fixpoint(profile):
+    for combo in product(ALPHABET, repeat=3):
+        text = "".join(combo)
+        once, findings = clean(text, profile)
+        twice, _ = clean(once, profile)
+        assert once == twice, f"not idempotent: {text!r} -> {once!r} -> {twice!r}"
+        leftover = [f for f in scan(once, profile) if f.action not in UNMODIFIED]
+        assert not leftover, f"not a fixpoint: {text!r} -> {once!r} leaves {leftover}"
+        stripped = sum(1 for f in findings if f.action == "strip")
+        assert len(once) == len(text) - stripped, f"length mismatch on {text!r}"
+
+
+@pytest.mark.parametrize("profile", ["prose", "code"])
+def test_every_replacement_is_ascii(profile):
+    """_survivors feeds replacements into the ASCII adjacency test.
+
+    A non-ASCII replacement would silently change which carriers get stripped, and
+    nothing else in the suite would notice.
+    """
+    for ch in ALPHABET:
+        for f in scan(f"a{ch}b", profile):
+            assert all(ord(c) < 128 for c in f.replacement), f

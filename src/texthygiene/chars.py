@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import unicodedata
 
-# Invisible and routinely used as carriers, but not meaningless: U+2060 WORD JOINER
-# is standard non-breaking glue and U+2061-2064 are semantic in mathematical markup.
-# Treated as context-sensitive in core, so prose only strips them between ASCII.
+# Stripped unconditionally, in both profiles. This is a deliberate trade, not a
+# claim that the class is meaningless: U+2060 WORD JOINER is real non-breaking glue,
+# U+2061-2064 are semantic in mathematical markup, and U+200B is a legitimate
+# line-break hint in spaceless scripts. None of those uses can be told apart from a
+# carrier by looking at neighbours - WORD JOINER's whole purpose is to sit inside
+# ASCII text, exactly where a carrier sits - and the removal costs a rendering hint
+# rather than any content. Losing it beats letting one em dash shield a payload.
 ZERO_WIDTH = frozenset({0x200B, 0x2060, 0x2061, 0x2062, 0x2063, 0x2064})
 
 # Semantic in emoji sequences, Indic conjuncts and Arabic; carriers between ASCII.

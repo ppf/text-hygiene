@@ -8,19 +8,23 @@
 # Documentation gets the prose profile: docs legitimately contain emoji and other
 # scripts, and the code profile would flag - and on fix, corrupt - a ZWJ emoji
 # sequence in a README. Everything else gets the code profile.
+#
+# --fail-on report, not the default: bidi overrides and NBSP are report-only under
+# prose, so a gate using the default exit status would let Trojan Source into a
+# README. A gate asks "is anything invisible here", not "would clean change it".
 set -e
 
 staged=$(git diff --cached --name-only --diff-filter=ACM)
 [ -n "$staged" ] || exit 0
 
 py_files=$(printf '%s\n' "$staged" | grep '\.py$' || true)
-docs=$(printf '%s\n' "$staged" | grep -Ei '\.(md|markdown|rst|txt|adoc)$' || true)
-code=$(printf '%s\n' "$staged" | grep -v '\.py$' | grep -Eiv '\.(md|markdown|rst|txt|adoc)$' || true)
+docs=$(printf '%s\n' "$staged" | grep -Ei '\.(md|markdown|mdx|rst|txt|adoc|tex)$' || true)
+code=$(printf '%s\n' "$staged" | grep -v '\.py$' \
+    | grep -Eiv '\.(md|markdown|mdx|rst|txt|adoc|tex)$' || true)
 
 status=0
-fix_profile=code
+failed_profiles=""
 
-# Exit 2 (tool failed) must never be masked by exit 1 (findings), in either order.
 raise_status() {
     if [ "$1" -gt "$status" ]; then
         status=$1
@@ -32,7 +36,16 @@ inspect() {
     shift
     rc=0
     # shellcheck disable=SC2086
-    text-hygiene inspect --profile "$profile" "$@" || rc=$?
+    text-hygiene inspect --profile "$profile" --fail-on report "$@" || rc=$?
+    if [ "$rc" -eq 1 ]; then
+        # Record the profile that found something, so the fix hint names the right
+        # one per group. A single global profile would tell the user to run
+        # --profile code over their markdown, which is the corruption above.
+        case " $failed_profiles " in
+            *" $profile "*) ;;
+            *) failed_profiles="$failed_profiles $profile" ;;
+        esac
+    fi
     raise_status "$rc"
 }
 
@@ -42,12 +55,8 @@ if [ -n "$code" ]; then
 fi
 
 if [ -n "$docs" ]; then
-    before=$status
     # shellcheck disable=SC2086
     inspect prose $docs
-    if [ "$status" -ne "$before" ]; then
-        fix_profile=prose
-    fi
 fi
 
 if [ -n "$py_files" ] && command -v ruff >/dev/null 2>&1; then
@@ -64,12 +73,15 @@ elif [ -n "$py_files" ]; then
     inspect code $py_files
 fi
 
-if [ "$status" -eq 2 ]; then
-    echo "pre-commit: text-hygiene or ruff failed to run" >&2
-    exit 2
+# Anything above 1 is a tool that failed to run - including 127, command not found.
+if [ "$status" -ge 2 ]; then
+    echo "pre-commit: text-hygiene or ruff failed to run (exit $status)" >&2
+    exit "$status"
 fi
 if [ "$status" -ne 0 ]; then
     echo "pre-commit: invisible Unicode found. Fix with:" >&2
-    echo "  text-hygiene clean --in-place --profile $fix_profile <file>" >&2
+    for profile in $failed_profiles; do
+        echo "  text-hygiene clean --in-place --profile $profile <file>" >&2
+    done
     exit 1
 fi

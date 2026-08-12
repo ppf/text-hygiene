@@ -5,6 +5,7 @@ import pytest
 
 from texthygiene import clean, scan
 from texthygiene.chars import classify
+from texthygiene.core import UNMODIFIED
 
 FIXTURES = Path(__file__).parent / "fixtures"
 RGI = [line for line in (FIXTURES / "emoji_rgi.txt").read_text("utf-8").splitlines()
@@ -56,12 +57,12 @@ def test_no_silent_loss(profile):
 
 @pytest.mark.parametrize("profile", ["prose", "code"])
 def test_scan_clean_agreement(profile):
-    """Report-only findings survive *at their mapped position*, not merely somewhere.
+    """Unmodified findings survive *at their mapped position*, not merely somewhere.
 
     Membership alone (`f.char in cleaned`) passes when a reported char is dropped
     while an identical one exists elsewhere, so the check walks the surviving
-    indices instead. The fixture carries a leading BOM, which is report-only under
-    both profiles - without it the loop body never runs under `code` and the
+    indices instead. The fixture carries a leading BOM, unmodified under both
+    profiles - without it the loop body never runs under `code` and the
     parametrisation asserts nothing.
     """
     text = f"\ufeffx{ZWSP}\u00a0\u202e{ZWJ}y\u3000z"
@@ -77,8 +78,8 @@ def test_scan_clean_agreement(profile):
         surviving[i] = cursor
         cursor += len(replaced.get(i, ch))
 
-    reported = [f for f in findings if f.action == "report"]
-    assert reported, f"fixture yields no report-only findings under {profile}"
+    reported = [f for f in findings if f.action in UNMODIFIED]
+    assert reported, f"fixture yields no unmodified findings under {profile}"
     for f in reported:
         assert cleaned[surviving[f.index]] == f.char
 

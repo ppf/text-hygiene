@@ -14,7 +14,13 @@ import pytest
 from texthygiene.chars import classify
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCES = sorted(ROOT.glob("src/texthygiene/*.py")) + sorted(ROOT.glob("tests/*.py"))
+SOURCES = (sorted(ROOT.glob("src/texthygiene/*.py"))
+           + sorted(ROOT.glob("tests/*.py"))
+           + [ROOT / "hooks/pre-commit", ROOT / "pyproject.toml", ROOT / ".gitignore"])
+
+# README.md is deliberately absent: it demonstrates the characters this tool
+# removes, so literal emoji sequences there are content, not contamination. The
+# pre-commit hook still checks it under the prose profile.
 
 
 @pytest.mark.parametrize("path", SOURCES, ids=lambda p: p.name)
