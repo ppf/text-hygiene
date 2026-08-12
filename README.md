@@ -176,14 +176,10 @@ ln -sfn "$(pwd)/skills/text-hygiene" ~/.codex/skills/text-hygiene
 ln -sfn "$(pwd)/skills/text-hygiene" ~/.agents/skills/text-hygiene
 ```
 
-Cursor reads `AGENTS.md` at the repo root and `.cursor/rules/*.mdc`. For a project
-using this tool, the shortest path is to point at the skill from `AGENTS.md`:
-
-```markdown
-## Invisible Unicode
-Before committing text, run `text-hygiene inspect --profile code <files>`.
-Full guidance: skills/text-hygiene/SKILL.md
-```
+Cursor does not read `SKILL.md` — it reads `AGENTS.md` and `.cursor/rules/*.mdc`. This
+repo's [`AGENTS.md`](AGENTS.md) points at the skill and repeats the two things most
+easily got wrong, so Cursor gets them without following the pointer. It also carries a
+copy-pasteable block for other projects that use the tool.
 
 The skill assumes the CLI is on `PATH`; install it once with
 `pipx install git+https://github.com/ppf/text-hygiene.git`.
