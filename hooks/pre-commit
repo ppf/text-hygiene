@@ -20,37 +20,52 @@ code=$(printf '%s\n' "$staged" | grep -v '\.py$' | grep -Eiv '\.(md|markdown|rst
 status=0
 fix_profile=code
 
-run_inspect() {
+# Exit 2 (tool failed) must never be masked by exit 1 (findings), in either order.
+raise_status() {
+    if [ "$1" -gt "$status" ]; then
+        status=$1
+    fi
+}
+
+inspect() {
     profile=$1
     shift
+    rc=0
     # shellcheck disable=SC2086
     text-hygiene inspect --profile "$profile" "$@" || rc=$?
-    [ "${rc:-0}" -eq 0 ] || { [ "$rc" -gt "$status" ] && status=$rc; }
-    return 0
+    raise_status "$rc"
 }
 
 if [ -n "$code" ]; then
     # shellcheck disable=SC2086
-    run_inspect code $code
+    inspect code $code
 fi
 
 if [ -n "$docs" ]; then
     before=$status
     # shellcheck disable=SC2086
-    run_inspect prose $docs
-    [ "$status" -eq "$before" ] || fix_profile=prose
+    inspect prose $docs
+    if [ "$status" -ne "$before" ]; then
+        fix_profile=prose
+    fi
 fi
 
 if [ -n "$py_files" ] && command -v ruff >/dev/null 2>&1; then
+    rc=0
     # shellcheck disable=SC2086
-    ruff check --select RUF001,RUF002,RUF003,PLE2502 $py_files || status=1
+    ruff check --select RUF001,RUF002,RUF003,PLE2502 $py_files || rc=$?
+    # ruff exits >=2 when it fails to run; keep that distinct from "found findings".
+    if [ "$rc" -ge 2 ]; then
+        rc=2
+    fi
+    raise_status "$rc"
 elif [ -n "$py_files" ]; then
     # shellcheck disable=SC2086
-    run_inspect code $py_files
+    inspect code $py_files
 fi
 
 if [ "$status" -eq 2 ]; then
-    echo "pre-commit: text-hygiene failed to run" >&2
+    echo "pre-commit: text-hygiene or ruff failed to run" >&2
     exit 2
 fi
 if [ "$status" -ne 0 ]; then

@@ -9,8 +9,9 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from typing import TextIO
 
-from .core import PROFILES, REPORT, clean, scan, summarize
+from .core import PROFILES, REPORT, Finding, clean, scan, summarize
 
 EXIT_CLEAN = 0
 EXIT_FINDINGS = 1
@@ -38,11 +39,20 @@ def _read(path: Path, max_size: int) -> str:
         raise InputError(f"{path}: not valid UTF-8 ({exc.reason})") from exc
 
 
-def _load(name: str, max_size: int) -> tuple[str, str]:
-    """Return (text, label) for a file name, or - for stdin."""
-    if name == "-":
-        return sys.stdin.read(), "<stdin>"
-    return _read(Path(name), max_size), name
+def _load_all(names: list[str], max_size: int) -> list[tuple[str, str]]:
+    """Read every input up front, as (label, text).
+
+    Loading before any write means a bad file in the middle of an --in-place run
+    fails before the first file is modified, rather than leaving the run half
+    applied with nothing saying which half.
+    """
+    loaded = []
+    for name in names:
+        if name == "-":
+            loaded.append(("<stdin>", sys.stdin.read()))
+        else:
+            loaded.append((name, _read(Path(name), max_size)))
+    return loaded
 
 
 def _write_in_place(path: Path, text: str) -> None:
@@ -60,18 +70,28 @@ def _write_in_place(path: Path, text: str) -> None:
         raise
 
 
-def _report(path: str, findings, args, stream) -> None:
+def _emit(results: list[tuple[str, list[Finding]]], args, stream: TextIO) -> None:
+    """Write one report covering every input.
+
+    JSON is emitted as a single document rather than one object per file, so that
+    passing several paths still produces something json.loads can read.
+    """
     if args.json:
-        json.dump({"path": path, "profile": args.profile,
-                   "findings": [f.to_dict() for f in findings]}, stream, indent=2)
+        json.dump({"profile": args.profile,
+                   "files": [{"path": path,
+                              "findings": [f.to_dict() for f in findings]}
+                             for path, findings in results]}, stream, indent=2)
         stream.write("\n")
         return
-    for f in findings:
-        stream.write(f"{path}:{f.line}:{f.column}: {f.action}: "
-                     f"U+{f.codepoint:04X} {f.name} [{f.category}]\n")
-    if args.stats and findings:
-        for key, count in sorted(summarize(findings).items()):
-            stream.write(f"  {key}: {count}\n")
+    for path, findings in results:
+        stream.writelines(
+            f"{path}:{f.line}:{f.column}: {f.action}: "
+            f"U+{f.codepoint:04X} {f.name} [{f.category}]\n"
+            for f in findings)
+    if args.stats:
+        merged = [f for _, findings in results for f in findings]
+        stream.writelines(f"  {key}: {count}\n"
+                          for key, count in sorted(summarize(merged).items()))
 
 
 def _inspect(args) -> int:
@@ -81,12 +101,10 @@ def _inspect(args) -> int:
     touch them - so they print without failing. Otherwise a file whose invisible
     characters are all legitimate, such as an emoji fixture, could never pass.
     """
-    actionable = False
-    for name in args.files:
-        text, label = _load(name, args.max_size)
-        findings = scan(text, args.profile)
-        actionable = actionable or any(f.action != REPORT for f in findings)
-        _report(label, findings, args, sys.stdout)
+    results = [(label, scan(text, args.profile))
+               for label, text in _load_all(args.files, args.max_size)]
+    _emit(results, args, sys.stdout)
+    actionable = any(f.action != REPORT for _, findings in results for f in findings)
     return EXIT_FINDINGS if actionable else EXIT_CLEAN
 
 
@@ -96,10 +114,11 @@ def _clean(args) -> int:
     if args.in_place and "-" in args.files:
         raise InputError("--in-place cannot be used with stdin")
 
-    for name in args.files:
-        text, label = _load(name, args.max_size)
+    loaded = _load_all(args.files, args.max_size)
+    results = []
+    for (label, text), name in zip(loaded, args.files, strict=True):
         cleaned, findings = clean(text, args.profile)
-
+        results.append((label, findings))
         if args.in_place:
             _write_in_place(Path(name), cleaned)
         elif args.output:
@@ -107,8 +126,8 @@ def _clean(args) -> int:
         else:
             sys.stdout.write(cleaned)
 
-        if args.stats or args.json:
-            _report(label, findings, args, sys.stderr)
+    if args.stats or args.json:
+        _emit(results, args, sys.stderr)
     return EXIT_CLEAN
 
 
@@ -125,10 +144,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("inspect", parents=[common],
-                   help="report findings; exit 1 if any are present")
+                   help="report findings; exit 1 if any are actionable")
     cleaner = sub.add_parser("clean", parents=[common], help="write cleaned text")
-    cleaner.add_argument("-o", "--output")
-    cleaner.add_argument("--in-place", action="store_true")
+    destination = cleaner.add_mutually_exclusive_group()
+    destination.add_argument("-o", "--output")
+    destination.add_argument("--in-place", action="store_true")
     return parser
 
 
@@ -136,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return _inspect(args) if args.command == "inspect" else _clean(args)
-    except (InputError, OSError, ValueError) as exc:
+    except (InputError, OSError, UnicodeDecodeError) as exc:
         sys.stderr.write(f"text-hygiene: {exc}\n")
         return EXIT_ERROR
 

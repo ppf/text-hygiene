@@ -7,7 +7,8 @@ from texthygiene import clean, scan
 from texthygiene.chars import classify
 
 FIXTURES = Path(__file__).parent / "fixtures"
-RGI = [line for line in (FIXTURES / "emoji_rgi.txt").read_text("utf-8").splitlines() if line]
+RGI = [line for line in (FIXTURES / "emoji_rgi.txt").read_text("utf-8").splitlines()
+       if line]
 
 ZWJ = "\u200d"
 ZWSP = "\u200b"
@@ -55,12 +56,31 @@ def test_no_silent_loss(profile):
 
 @pytest.mark.parametrize("profile", ["prose", "code"])
 def test_scan_clean_agreement(profile):
-    text = f"x{ZWSP}\u00a0\u202e{ZWJ}y"
+    """Report-only findings survive *at their mapped position*, not merely somewhere.
+
+    Membership alone (`f.char in cleaned`) passes when a reported char is dropped
+    while an identical one exists elsewhere, so the check walks the surviving
+    indices instead. The fixture carries a leading BOM, which is report-only under
+    both profiles - without it the loop body never runs under `code` and the
+    parametrisation asserts nothing.
+    """
+    text = f"\ufeffx{ZWSP}\u00a0\u202e{ZWJ}y\u3000z"
     cleaned, findings = clean(text, profile)
+
+    acted = {f.index for f in findings if f.action in ("strip", "replace")}
+    replaced = {f.index: f.replacement for f in findings if f.action == "replace"}
+    surviving = {}
+    cursor = 0
+    for i, ch in enumerate(text):
+        if i in acted and i not in replaced:
+            continue
+        surviving[i] = cursor
+        cursor += len(replaced.get(i, ch))
+
     reported = [f for f in findings if f.action == "report"]
-    # Report-only findings must leave their character in place.
+    assert reported, f"fixture yields no report-only findings under {profile}"
     for f in reported:
-        assert f.char in cleaned
+        assert cleaned[surviving[f.index]] == f.char
 
 
 def test_emoji_corpus_survives_prose():
@@ -98,7 +118,7 @@ def test_zwj_preserved_after_skin_tone_modifier():
 
 
 def test_doubled_zwj_between_ascii_still_stripped():
-    """Carrier chars are transparent to the adjacency test, so doubling cannot evade it."""
+    """Carriers are transparent to the adjacency test, so doubling cannot evade it."""
     cleaned, _ = clean(f"Hel{ZWJ}{ZWJ}lo", "prose")
     assert cleaned == "Hello"
 
@@ -155,7 +175,7 @@ def test_leading_bom_preserved_mid_file_bom_stripped():
 def test_line_numbers_not_confused_by_u2028():
     """The ZWSP is on line 2; splitlines() also breaks on U+2028 and would say 3."""
     findings = scan(f"a\u2028b\n{ZWSP}", "prose")
-    zwsp = [f for f in findings if f.codepoint == 0x200B][0]
+    zwsp = next(f for f in findings if f.codepoint == 0x200B)
     assert zwsp.line == 2
 
 
@@ -173,10 +193,37 @@ def test_unlisted_format_chars_caught_by_derivation():
 
 def test_every_cf_codepoint_is_classified():
     unclassified = [cp for cp in range(0x110000)
-                    if unicodedata.category(chr(cp)) == "Cf" and classify(chr(cp)) is None]
+                    if unicodedata.category(chr(cp)) == "Cf"
+                    and classify(chr(cp)) is None]
     assert unclassified == []
 
 
 def test_unknown_profile_rejected():
     with pytest.raises(ValueError):
         scan("x", "strict")
+
+
+def test_line_separator_replaced_under_code():
+    assert clean("a\u2028b", "code")[0] == "a\nb"
+    assert clean("a\u2028b", "prose")[0] == "a\u2028b"
+
+
+def test_cgj_reported_in_prose_stripped_in_code():
+    assert clean("a\u034fb", "prose")[0] == "a\u034fb"
+    assert clean("a\u034fb", "code")[0] == "ab"
+
+
+@pytest.mark.parametrize("cp", [0x0B, 0x0C, 0x1C, 0x86])
+def test_controls_stripped_in_both_profiles(cp):
+    for profile in ("prose", "code"):
+        assert clean(f"a{chr(cp)}b", profile)[0] == "ab"
+
+
+@pytest.mark.parametrize("keep", ["\t", "\n", "\r"])
+def test_tab_newline_carriage_return_survive(keep):
+    assert clean(f"a{keep}b", "code")[0] == f"a{keep}b"
+
+
+def test_mongolian_vowel_separator_kept_in_prose():
+    assert clean("ᠠ\u180eᠡ", "prose")[0] == "ᠠ\u180eᠡ"
+    assert clean("ᠠ\u180eᠡ", "code")[0] == "ᠠᠡ"

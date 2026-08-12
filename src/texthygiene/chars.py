@@ -2,18 +2,21 @@
 
 Scope is *derived* from Unicode's General_Category rather than curated: any `Cf`
 character is in scope automatically, so new Unicode versions need no code change.
-A curated list built from the obvious suspects misses 54 of the 170 `Cf` codepoints
-in UCD 16.0.
+The explicit sets below name only the classes that need distinct handling; they
+cover well under half the `Cf` codepoints in UCD 16.0, and everything else falls
+through to `other_format`. test_every_cf_codepoint_is_classified pins that.
 
-Classification is per-character-encountered, not a precomputed 1.1M-codepoint table,
-so import cost stays at zero.
+Classification runs per character encountered rather than over a precomputed
+1.1M-codepoint table.
 """
 
 from __future__ import annotations
 
 import unicodedata
 
-# Pure carriers: no legitimate use in any script.
+# Invisible and routinely used as carriers, but not meaningless: U+2060 WORD JOINER
+# is standard non-breaking glue and U+2061-2064 are semantic in mathematical markup.
+# Treated as context-sensitive in core, so prose only strips them between ASCII.
 ZERO_WIDTH = frozenset({0x200B, 0x2060, 0x2061, 0x2062, 0x2063, 0x2064})
 
 # Semantic in emoji sequences, Indic conjuncts and Arabic; carriers between ASCII.
@@ -40,25 +43,21 @@ HANGUL_FILLER = frozenset({0x115F, 0x1160, 0x3164, 0xFFA0})
 
 LINE_SEP = frozenset({0x2028, 0x2029, 0x0085})
 
-SPACES = frozenset({0x00A0, 0x1680, 0x202F, 0x205F, 0x3000}) | frozenset(range(0x2000, 0x200B))
+SPACES = (frozenset({0x00A0, 0x1680, 0x202F, 0x205F, 0x3000})
+          | frozenset(range(0x2000, 0x200B)))
 
 BOM = 0xFEFF
 SOFT_HYPHEN = 0x00AD
 CGJ = 0x034F
 
-# Format characters that are semantic in Arabic prose; kept under the prose profile.
+# Format characters that are semantic in running text; kept under the prose profile.
+# U+180E is the Mongolian vowel separator - Cf, so it would otherwise fall through
+# to other_format and be stripped out of legitimate Mongolian.
 PROSE_ALLOWED_CF = frozenset(range(0x0600, 0x0606)) | {0x06DD, 0x070F, 0x0890, 0x0891,
-                                                       0x08E2, 0x110BD, 0x110CD}
+                                                       0x08E2, 0x110BD, 0x110CD, 0x180E}
 
 # Tab, newline and carriage return are the only controls that survive.
 CONTROL_KEEP = frozenset({0x09, 0x0A, 0x0D})
-
-# Classes whose characters are invisible enough that they should not count as a
-# neighbour when deciding whether a joiner sits between ASCII: otherwise doubling
-# a ZWJ would defeat the adjacency test.
-TRANSPARENT = frozenset({"zero_width", "joiner", "variation", "soft_hyphen",
-                         "bidi", "cgj", "other_format", "tag"})
-
 
 def classify(ch: str) -> str | None:
     """Return this character's class, or None if it is unremarkable."""

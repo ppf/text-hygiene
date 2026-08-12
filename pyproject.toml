@@ -22,5 +22,15 @@ text-hygiene = "texthygiene.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+texthygiene = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 90
+
+[tool.ruff.lint]
+# Pinned so CI does not drift when ruff changes its defaults.
+select = ["E", "F", "W", "I", "B", "UP", "RUF"]

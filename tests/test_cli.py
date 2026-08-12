@@ -61,8 +61,56 @@ def test_json_output(tmp_path, capsys):
     path = write(tmp_path, "d.txt", f"a{ZWSP}b")
     main(["inspect", str(path), "--json"])
     payload = json.loads(capsys.readouterr().out)
-    assert payload["findings"][0]["codepoint"] == "U+200B"
-    assert payload["findings"][0]["action"] == "strip"
+    finding = payload["files"][0]["findings"][0]
+    assert finding["codepoint"] == "U+200B"
+    assert finding["action"] == "strip"
+
+
+def test_json_stays_parseable_with_multiple_files(tmp_path, capsys):
+    """One document, not one per file - concatenated objects don't parse."""
+    a = write(tmp_path, "a.txt", f"a{ZWSP}b")
+    b = write(tmp_path, "b.txt", f"c{ZWSP}d")
+    main(["inspect", str(a), str(b), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert [f["path"] for f in payload["files"]] == [str(a), str(b)]
+
+
+def test_in_place_does_not_partially_apply_when_an_input_fails(tmp_path, capsys):
+    """A bad file must fail before the first write, not halfway through."""
+    good = write(tmp_path, "good.txt", f"a{ZWSP}b")
+    write(tmp_path, "bad.png", b"\x89PNG\x00\x00")
+    later = write(tmp_path, "later.txt", f"c{ZWSP}d")
+    before = good.read_bytes()
+    assert main(["clean", str(good), str(tmp_path / "bad.png"), str(later),
+                 "--in-place"]) == EXIT_ERROR
+    assert good.read_bytes() == before, "first file was modified despite the failure"
+    assert later.read_bytes() == f"c{ZWSP}d".encode()
+
+
+def test_output_and_in_place_are_mutually_exclusive(tmp_path, capsys):
+    path = write(tmp_path, "d.txt", f"a{ZWSP}b")
+    with pytest.raises(SystemExit):
+        main(["clean", str(path), "-o", str(tmp_path / "o.txt"), "--in-place"])
+
+
+def test_stats_output(tmp_path, capsys):
+    path = write(tmp_path, "d.txt", f"a{ZWSP}b")
+    main(["inspect", str(path), "--stats"])
+    assert "zero_width/strip: 1" in capsys.readouterr().out
+
+
+def test_clean_json_goes_to_stderr_not_stdout(tmp_path, capsys):
+    path = write(tmp_path, "d.txt", f"a{ZWSP}b")
+    main(["clean", str(path), "--json"])
+    captured = capsys.readouterr()
+    assert captured.out == "ab", "stdout must carry only the cleaned text"
+    assert json.loads(captured.err)["files"][0]["findings"]
+
+
+def test_clean_exits_zero_even_with_findings(tmp_path, capsys):
+    """clean reports through its output, not its exit status."""
+    path = write(tmp_path, "d.txt", f"a{ZWSP}b")
+    assert main(["clean", str(path)]) == EXIT_CLEAN
 
 
 def test_clean_to_stdout(tmp_path, capsys):
@@ -109,7 +157,8 @@ def test_in_place_rejected_with_stdin():
 def test_stdin_roundtrip():
     proc = subprocess.run(
         [sys.executable, "-m", "texthygiene.cli", "clean", "-"],
-        input=f"a{ZWSP}b".encode(), capture_output=True)
+        input=f"a{ZWSP}b".encode(), capture_output=True, check=False)
+    assert proc.returncode == 0, proc.stderr
     assert proc.stdout == b"ab"
 
 
