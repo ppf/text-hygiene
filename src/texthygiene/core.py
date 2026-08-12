@@ -37,7 +37,7 @@ UNMODIFIED = (REPORT, ALLOW)
 # one em dash then hides an unlimited run of zero-width spaces. That is the tool's
 # primary use case, so the class is stripped unconditionally instead - see
 # ZERO_WIDTH in chars.py for what that costs.
-CONTEXT_SENSITIVE = frozenset({"joiner", "variation"})
+CONTEXT_SENSITIVE = frozenset({"joiner", "variation", "other_format"})
 
 
 @dataclass(frozen=True)
@@ -99,7 +99,11 @@ def _resolve(category: str, profile: str, codepoint: int, leading: bool,
 
     if category == "other_format":
         if profile == "prose" and codepoint in PROSE_ALLOWED_CF:
-            return None, ""
+            # The allowlist earns its keep in Arabic text, not in English. Without
+            # the adjacency check these 14 codepoints were a silent carrier in
+            # pure-ASCII prose - no finding at all, so nothing to grep and nothing
+            # for a gate to block.
+            return (STRIP, "") if between_ascii else (ALLOW, "")
         return STRIP, ""
 
     if category in CONTEXT_SENSITIVE:
@@ -123,8 +127,11 @@ def _resolve(category: str, profile: str, codepoint: int, leading: bool,
         return (REPLACE, "\n") if profile == "code" else (ALLOW, "")
 
     if category in ("hangul_filler", "cgj"):
-        # Blank-rendering characters with no typographic role; a gate should say so.
-        return (STRIP, "") if profile == "code" else (REPORT, "")
+        # Stripped in both profiles so the gate stays satisfiable: blocking these as
+        # REPORT left no way to comply, since clean would not remove them. The same
+        # trade as ZERO_WIDTH - a Hangul filler does render isolated jamo and CGJ
+        # blocks collation reordering, so this costs those rare uses.
+        return STRIP, ""
 
     # Unreachable while every classify() output has a branch above. Raising rather
     # than returning None stops a future class from being detected and then

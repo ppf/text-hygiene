@@ -120,6 +120,7 @@ ALPHABET = [
     "\u202e", "\u3164", "\u0086",            # bidi override, hangul filler, C1 control
     "\U000e0067", "\u00ad", "\u0600",        # tag char, soft hyphen, Arabic format
     "\U0001F3F4", "\U000e007f", "\u2060",    # flag base, tag terminator, word joiner
+    "\u0600", "\u034f", "\u0085",            # allowlisted Cf, CGJ, NEL
 ]
 
 

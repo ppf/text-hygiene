@@ -48,9 +48,24 @@ def test_fail_on_report_gates_advisory_findings(tmp_path, capsys):
                  "--fail-on", "report"]) == EXIT_FINDINGS
 
 
-def test_fail_on_report_still_passes_genuinely_clean_files(tmp_path):
-    ok = write(tmp_path, "ok.md", "nothing to see here\n")
-    assert main(["inspect", str(ok), "--fail-on", "report"]) == EXIT_CLEAN
+@pytest.mark.parametrize("name,content", [
+    ("plain", "nothing to see here\n"),
+    ("emoji_family", "\U0001F468\u200d\U0001F469\u200d\U0001F467\n"),
+    ("keycap", "press 1\ufe0f\u20e3 now\n"),
+    ("devanagari", "\u0915\u094d\u200d\u0937\n"),
+    ("nbsp", "10\u00a0km\n"),
+    ("leading_bom", "\ufeffheading\n"),
+    ("arabic_format", "\u0645\u0600\u0645\n"),
+])
+def test_gate_mode_is_satisfiable_for_allow_findings(tmp_path, name, content):
+    """Gate mode must never fail on ALLOW, or it cannot be satisfied.
+
+    clean will not remove these, so failing on them leaves --no-verify as the only
+    way to commit. A plain-ASCII fixture cannot check this: it would stay green
+    even if every ALLOW classification were broken.
+    """
+    path = write(tmp_path, f"{name}.md", content)
+    assert main(["inspect", str(path), "--fail-on", "report"]) == EXIT_CLEAN
 
 
 def test_in_place_preflights_hardlinks_before_writing_anything(tmp_path):

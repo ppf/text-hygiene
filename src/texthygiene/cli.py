@@ -113,8 +113,9 @@ def _inspect(args) -> int:
     results = [(label, scan(text, args.profile))
                for label, text in _load_all(args.files, args.max_size)]
     _emit(results, args, sys.stdout)
-    gated = UNMODIFIED if args.fail_on == "actionable" else (ALLOW,)
-    failing = [f for _, findings in results for f in findings if f.action not in gated]
+    exempt = UNMODIFIED if args.fail_on == "actionable" else (ALLOW,)
+    failing = [f for _, findings in results for f in findings
+               if f.action not in exempt]
     return EXIT_FINDINGS if failing else EXIT_CLEAN
 
 

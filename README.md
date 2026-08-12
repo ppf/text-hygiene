@@ -24,7 +24,7 @@ cat draft.md | text-hygiene clean -
 | Joiners, variation selectors | strip only between ASCII | strip |
 | Bidi controls | report | strip |
 | NBSP and friends | allow | → ASCII space |
-| Arabic format characters | kept | strip |
+| Arabic format characters | kept, unless between ASCII | strip |
 | Emoji tag sequences | kept | kept |
 
 The default is conservative because the tool edits files. Use `--profile code` where
@@ -79,6 +79,15 @@ joiner's neighbour is a modifier, not the base emoji).
 produce identical output. The context-awareness only earns its keep on text containing
 emoji, Indic, or RTL — where naive stripping corrupts content.
 
+**`allow` is a side channel, and that is a deliberate cost.** Anything the `prose`
+profile keeps can carry information: a variation selector on each non-Latin letter is
+roughly a bit apiece, and so is the presence or absence of a joiner between two emoji.
+Gate mode does not fail on `allow` and `clean` will not remove it, so a document rich in
+emoji or non-Latin script has invisible capacity this tool deliberately leaves alone —
+that is the price of never corrupting valid content. `--profile code` removes all of it.
+Every one of those characters *is* reported, so `--json` will show you the channel even
+though nothing acts on it.
+
 ## Behaviour worth knowing
 
 - **Findings carry one of four actions.** `strip` and `replace` are what `clean`
@@ -86,13 +95,20 @@ emoji, Indic, or RTL — where naive stripping corrupts content.
   commit gate has to tell them apart:
   - `allow` — context proved it legitimate here: a joiner inside an emoji sequence,
     NBSP in prose, a leading BOM. Never fails, under either `--fail-on`.
-  - `report` — policy declines to modify it, but it still warrants a look: a bidi
-    override, a Hangul filler.
+  - `report` — policy declines to modify it, but it still warrants a look. Currently
+    only bidi controls: removing a direction override could change how the text
+    renders, so `clean` leaves it to a human. These need a manual edit; the hook says
+    so rather than printing a `clean` command that would change nothing.
 - **`inspect --fail-on`** picks the question the exit status answers. `actionable`
   (default) means "would `clean` change this?". `report` is gate mode and also fails on
   `report` findings — without it a Trojan Source bidi override commits into a README,
   since `clean` won't touch it under prose. Neither setting fails on `allow`, or the
   gate could never be satisfied.
+- **Anything the gate blocks must be fixable without losing content** — by `clean` where
+  it can, by a documented manual edit otherwise. That rule is why Hangul fillers and CGJ
+  are stripped rather than reported, and why bidi is the one class left to human
+  judgement: ordinary RTL prose needs no direction override at all, since the Bidi
+  Algorithm derives direction from the letters themselves.
 - A **leading BOM** is an encoding artifact: preserved and allowed. A mid-file `U+FEFF`
   is a carrier: stripped.
 - Line numbers use `split("\n")`, not `splitlines()` — the latter also breaks on

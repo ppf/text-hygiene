@@ -182,7 +182,6 @@ def test_line_numbers_not_confused_by_u2028():
 
 def test_hangul_filler_detected():
     assert classify("\u3164") == "hangul_filler"
-    assert clean("a\u3164b", "code")[0] == "ab"
 
 
 def test_unlisted_format_chars_caught_by_derivation():
@@ -209,9 +208,11 @@ def test_line_separator_replaced_under_code():
     assert clean("a\u2028b", "prose")[0] == "a\u2028b"
 
 
-def test_cgj_reported_in_prose_stripped_in_code():
-    assert clean("a\u034fb", "prose")[0] == "a\u034fb"
-    assert clean("a\u034fb", "code")[0] == "ab"
+def test_cgj_and_hangul_filler_stripped_in_both_profiles():
+    """Stripped, not reported, so gate mode stays satisfiable - clean can fix them."""
+    for profile in ("prose", "code"):
+        assert clean("a\u034fb", profile)[0] == "ab"
+        assert clean("a\u3164b", profile)[0] == "ab"
 
 
 @pytest.mark.parametrize("cp", [0x0B, 0x0C, 0x1C, 0x86])

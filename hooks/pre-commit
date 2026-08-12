@@ -24,6 +24,8 @@ code=$(printf '%s\n' "$staged" | grep -v '\.py$' \
 
 status=0
 failed_profiles=""
+saw_actionable=0
+saw_report=0
 
 raise_status() {
     if [ "$1" -gt "$status" ]; then
@@ -35,8 +37,8 @@ inspect() {
     profile=$1
     shift
     rc=0
-    # shellcheck disable=SC2086
-    text-hygiene inspect --profile "$profile" --fail-on report "$@" || rc=$?
+    out=$(text-hygiene inspect --profile "$profile" --fail-on report "$@") || rc=$?
+    [ -z "$out" ] || printf '%s\n' "$out"
     if [ "$rc" -eq 1 ]; then
         # Record the profile that found something, so the fix hint names the right
         # one per group. A single global profile would tell the user to run
@@ -45,6 +47,11 @@ inspect() {
             *" $profile "*) ;;
             *) failed_profiles="$failed_profiles $profile" ;;
         esac
+        # Split by action so the hint is honest. Telling someone to run `clean` on a
+        # report-only finding sends them in a circle: the command succeeds, changes
+        # nothing, and the commit is still blocked.
+        printf '%s\n' "$out" | grep -q ': \(strip\|replace\): ' && saw_actionable=1
+        printf '%s\n' "$out" | grep -q ': report: ' && saw_report=1
     fi
     raise_status "$rc"
 }
@@ -79,9 +86,16 @@ if [ "$status" -ge 2 ]; then
     exit "$status"
 fi
 if [ "$status" -ne 0 ]; then
-    echo "pre-commit: invisible Unicode found. Fix with:" >&2
-    for profile in $failed_profiles; do
-        echo "  text-hygiene clean --in-place --profile $profile <file>" >&2
-    done
+    echo "pre-commit: invisible Unicode found." >&2
+    if [ "$saw_actionable" -eq 1 ]; then
+        echo "  Fix the strip/replace findings with:" >&2
+        for profile in $failed_profiles; do
+            echo "    text-hygiene clean --in-place --profile $profile <file>" >&2
+        done
+    fi
+    if [ "$saw_report" -eq 1 ]; then
+        echo "  The 'report:' findings need a manual edit - clean will not remove" >&2
+        echo "  them, because removing them could change how the text renders." >&2
+    fi
     exit 1
 fi

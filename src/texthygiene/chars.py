@@ -45,7 +45,10 @@ FLAG_BASE = 0x1F3F4
 # Render blank but are Lo, not Cf — the standard steganography trick.
 HANGUL_FILLER = frozenset({0x115F, 0x1160, 0x3164, 0xFFA0})
 
-LINE_SEP = frozenset({0x2028, 0x2029, 0x0085})
+# U+0085 NEL is deliberately absent: it is a C1 control, and a raw NEL in a text
+# file is far more likely a CP1252 round-trip artifact than an intended separator.
+# It falls through to the Cc branch and is stripped like every other C1 control.
+LINE_SEP = frozenset({0x2028, 0x2029})
 
 SPACES = (frozenset({0x00A0, 0x1680, 0x202F, 0x205F, 0x3000})
           | frozenset(range(0x2000, 0x200B)))
