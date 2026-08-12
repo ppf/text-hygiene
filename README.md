@@ -161,6 +161,33 @@ Renames are included (`--diff-filter=ACMR`): git classifies `git mv` plus an edi
 The repo passes its own hook, and a test enforces that source files contain no *literal*
 invisible characters — escapes only. Nobody can review a `U+200D` they cannot see.
 
+## Use as an agent skill
+
+`skills/text-hygiene/SKILL.md` uses the `name`/`description` frontmatter that Claude
+Code, Codex, and the shared `~/.agents/skills` convention all read, so one file serves
+all three. Symlink it rather than copying, so `git pull` updates the skill:
+
+```bash
+# Claude Code
+ln -sfn "$(pwd)/skills/text-hygiene" ~/.claude/skills/text-hygiene
+# Codex
+ln -sfn "$(pwd)/skills/text-hygiene" ~/.codex/skills/text-hygiene
+# cross-agent
+ln -sfn "$(pwd)/skills/text-hygiene" ~/.agents/skills/text-hygiene
+```
+
+Cursor reads `AGENTS.md` at the repo root and `.cursor/rules/*.mdc`. For a project
+using this tool, the shortest path is to point at the skill from `AGENTS.md`:
+
+```markdown
+## Invisible Unicode
+Before committing text, run `text-hygiene inspect --profile code <files>`.
+Full guidance: skills/text-hygiene/SKILL.md
+```
+
+The skill assumes the CLI is on `PATH`; install it once with
+`pipx install git+https://github.com/ppf/text-hygiene.git`.
+
 ## API
 
 ```python
