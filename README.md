@@ -7,7 +7,7 @@ dependencies.
 ```bash
 pipx install .            # or: pip install -e .
 
-text-hygiene inspect draft.md              # exit 0 clean / 1 findings / 2 error
+text-hygiene inspect draft.md              # exit 0 nothing to fix / 1 actionable / 2 error
 text-hygiene clean draft.md -o out.md
 text-hygiene clean --in-place --profile code src/*.py
 cat draft.md | text-hygiene clean -
@@ -66,6 +66,10 @@ emoji, Indic, or RTL — where naive stripping corrupts content.
 
 ## Behaviour worth knowing
 
+- **Exit status answers "would `clean` modify this file?"** Report-only findings still
+  print, but exit 0 — the profile has already decided not to touch them. Otherwise a
+  file whose invisible characters are all legitimate, like an emoji fixture or a
+  document containing RTL, could never pass the hook.
 - A **leading BOM** is an encoding artifact: preserved and reported. A mid-file `U+FEFF`
   is a carrier: stripped.
 - Line numbers use `split("\n")`, not `splitlines()` — the latter also breaks on
@@ -83,9 +87,16 @@ emoji, Indic, or RTL — where naive stripping corrupts content.
 ln -sf "$(pwd)/hooks/pre-commit" .git/hooks/pre-commit
 ```
 
-Runs `--profile code` on staged files. Python files are delegated to ruff
-(RUF001-003, PLE2502) when it is installed, so repos already running ruff don't get two
-divergent sets of diagnostics for the same characters.
+Documentation (`.md`, `.rst`, `.txt`, `.adoc`) is checked with `prose`; everything else
+gets `code`. Docs legitimately contain emoji and other scripts, and `code` would flag —
+and on fix, corrupt — a ZWJ emoji sequence in a README.
+
+Python files are delegated to ruff (RUF001-003, PLE2502) when it is installed, so repos
+already running ruff don't get two divergent sets of diagnostics for the same
+characters.
+
+The repo passes its own hook, and a test enforces that source files contain no *literal*
+invisible characters — escapes only. Nobody can review a `U+200D` they cannot see.
 
 ## API
 

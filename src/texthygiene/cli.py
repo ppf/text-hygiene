@@ -10,7 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .core import PROFILES, clean, scan, summarize
+from .core import PROFILES, REPORT, clean, scan, summarize
 
 EXIT_CLEAN = 0
 EXIT_FINDINGS = 1
@@ -36,6 +36,13 @@ def _read(path: Path, max_size: int) -> str:
         return data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise InputError(f"{path}: not valid UTF-8 ({exc.reason})") from exc
+
+
+def _load(name: str, max_size: int) -> tuple[str, str]:
+    """Return (text, label) for a file name, or - for stdin."""
+    if name == "-":
+        return sys.stdin.read(), "<stdin>"
+    return _read(Path(name), max_size), name
 
 
 def _write_in_place(path: Path, text: str) -> None:
@@ -68,16 +75,19 @@ def _report(path: str, findings, args, stream) -> None:
 
 
 def _inspect(args) -> int:
-    found = False
+    """Exit status answers "would `clean` modify these files?".
+
+    Report-only findings are advisory - the profile has already decided not to
+    touch them - so they print without failing. Otherwise a file whose invisible
+    characters are all legitimate, such as an emoji fixture, could never pass.
+    """
+    actionable = False
     for name in args.files:
-        if name == "-":
-            text, label = sys.stdin.read(), "<stdin>"
-        else:
-            text, label = _read(Path(name), args.max_size), name
+        text, label = _load(name, args.max_size)
         findings = scan(text, args.profile)
-        found = found or bool(findings)
+        actionable = actionable or any(f.action != REPORT for f in findings)
         _report(label, findings, args, sys.stdout)
-    return EXIT_FINDINGS if found else EXIT_CLEAN
+    return EXIT_FINDINGS if actionable else EXIT_CLEAN
 
 
 def _clean(args) -> int:
@@ -87,10 +97,7 @@ def _clean(args) -> int:
         raise InputError("--in-place cannot be used with stdin")
 
     for name in args.files:
-        if name == "-":
-            text, label = sys.stdin.read(), "<stdin>"
-        else:
-            text, label = _read(Path(name), args.max_size), name
+        text, label = _load(name, args.max_size)
         cleaned, findings = clean(text, args.profile)
 
         if args.in_place:

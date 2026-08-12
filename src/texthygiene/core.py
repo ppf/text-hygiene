@@ -8,6 +8,7 @@ agreement invariant unenforceable.
 from __future__ import annotations
 
 import bisect
+from collections import Counter
 from dataclasses import dataclass
 
 from .chars import (BOM, FLAG_BASE, PROSE_ALLOWED_CF, TAG_SPEC, TAG_TERM,
@@ -18,6 +19,8 @@ PROFILES = ("prose", "code")
 STRIP = "strip"
 REPLACE = "replace"
 REPORT = "report"
+
+CONTEXT_SENSITIVE = frozenset({"joiner", "variation"})
 
 
 @dataclass(frozen=True)
@@ -103,7 +106,7 @@ def _resolve(category: str, profile: str, codepoint: int, leading: bool,
             return None, ""
         return STRIP, ""
 
-    if category in ("joiner", "variation"):
+    if category in CONTEXT_SENSITIVE:
         if profile == "code":
             return STRIP, ""
         return (STRIP, "") if between_ascii else (REPORT, "")
@@ -146,12 +149,12 @@ def scan(text: str, profile: str = "prose") -> list[Finding]:
     starts = _line_starts(text)
     findings = []
 
-    for i, category in enumerate(classes):
+    for i, (ch, category) in enumerate(zip(text, classes)):
         if category is None or i in protected:
             continue
         between = (_between_ascii(text, classes, i)
-                   if category in ("joiner", "variation") else False)
-        action, replacement = _resolve(category, profile, ord(text[i]),
+                   if category in CONTEXT_SENSITIVE else False)
+        action, replacement = _resolve(category, profile, ord(ch),
                                        leading=(i == 0), between_ascii=between)
         if action is None:
             continue
@@ -160,9 +163,9 @@ def scan(text: str, profile: str = "prose") -> list[Finding]:
             index=i,
             line=line,
             column=i - starts[line - 1] + 1,
-            char=text[i],
-            codepoint=ord(text[i]),
-            name=char_name(text[i]),
+            char=ch,
+            codepoint=ord(ch),
+            name=char_name(ch),
             category=category,
             action=action,
             replacement=replacement,
@@ -185,8 +188,4 @@ def clean(text: str, profile: str = "prose") -> tuple[str, list[Finding]]:
 
 
 def summarize(findings: list[Finding]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for f in findings:
-        key = f"{f.category}/{f.action}"
-        counts[key] = counts.get(key, 0) + 1
-    return counts
+    return dict(Counter(f"{f.category}/{f.action}" for f in findings))

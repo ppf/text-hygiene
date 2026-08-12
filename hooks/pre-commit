@@ -4,19 +4,41 @@
 # Python files are delegated to ruff (RUF001-003 confusables, PLE2502 bidirectional)
 # when it is available, so repos already running ruff do not get two divergent sets
 # of diagnostics for the same characters.
+#
+# Documentation gets the prose profile: docs legitimately contain emoji and other
+# scripts, and the code profile would flag - and on fix, corrupt - a ZWJ emoji
+# sequence in a README. Everything else gets the code profile.
 set -e
 
 staged=$(git diff --cached --name-only --diff-filter=ACM)
 [ -n "$staged" ] || exit 0
 
 py_files=$(printf '%s\n' "$staged" | grep '\.py$' || true)
-other=$(printf '%s\n' "$staged" | grep -v '\.py$' || true)
+docs=$(printf '%s\n' "$staged" | grep -Ei '\.(md|markdown|rst|txt|adoc)$' || true)
+code=$(printf '%s\n' "$staged" | grep -v '\.py$' | grep -Eiv '\.(md|markdown|rst|txt|adoc)$' || true)
 
 status=0
+fix_profile=code
 
-if [ -n "$other" ]; then
+run_inspect() {
+    profile=$1
+    shift
     # shellcheck disable=SC2086
-    text-hygiene inspect --profile code $other || status=$?
+    text-hygiene inspect --profile "$profile" "$@" || rc=$?
+    [ "${rc:-0}" -eq 0 ] || { [ "$rc" -gt "$status" ] && status=$rc; }
+    return 0
+}
+
+if [ -n "$code" ]; then
+    # shellcheck disable=SC2086
+    run_inspect code $code
+fi
+
+if [ -n "$docs" ]; then
+    before=$status
+    # shellcheck disable=SC2086
+    run_inspect prose $docs
+    [ "$status" -eq "$before" ] || fix_profile=prose
 fi
 
 if [ -n "$py_files" ] && command -v ruff >/dev/null 2>&1; then
@@ -24,7 +46,7 @@ if [ -n "$py_files" ] && command -v ruff >/dev/null 2>&1; then
     ruff check --select RUF001,RUF002,RUF003,PLE2502 $py_files || status=1
 elif [ -n "$py_files" ]; then
     # shellcheck disable=SC2086
-    text-hygiene inspect --profile code $py_files || status=$?
+    run_inspect code $py_files
 fi
 
 if [ "$status" -eq 2 ]; then
@@ -33,6 +55,6 @@ if [ "$status" -eq 2 ]; then
 fi
 if [ "$status" -ne 0 ]; then
     echo "pre-commit: invisible Unicode found. Fix with:" >&2
-    echo "  text-hygiene clean --in-place --profile code <file>" >&2
+    echo "  text-hygiene clean --in-place --profile $fix_profile <file>" >&2
     exit 1
 fi

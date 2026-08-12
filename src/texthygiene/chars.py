@@ -26,8 +26,8 @@ BIDI = frozenset({0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
                   0x200E, 0x200F, 0x061C})
 
 # Semantic in CJK (Ideographic Variation Database), Mongolian, and emoji presentation.
-VARIATION = frozenset(range(0xFE00, 0xFE10)) | frozenset(range(0xE0100, 0xE01F0)) \
-    | frozenset(range(0x180B, 0x180E))
+VARIATION = (frozenset(range(0xFE00, 0xFE10)) | frozenset(range(0xE0100, 0xE01F0))
+             | frozenset(range(0x180B, 0x180E)))
 
 # Emoji tag sequences: U+1F3F4 + U+E0020..E007E + U+E007F terminator.
 TAG_RANGE = frozenset(range(0xE0000, 0xE0080))
@@ -64,7 +64,9 @@ def classify(ch: str) -> str | None:
     """Return this character's class, or None if it is unremarkable."""
     cp = ord(ch)
     if cp < 0x80:
-        return "control" if cp not in CONTROL_KEEP and unicodedata.category(ch) == "Cc" else None
+        if cp not in CONTROL_KEEP and unicodedata.category(ch) == "Cc":
+            return "control"
+        return None
     if cp in ZERO_WIDTH:
         return "zero_width"
     if cp == BOM:

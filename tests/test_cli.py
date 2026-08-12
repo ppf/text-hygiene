@@ -7,7 +7,7 @@ import pytest
 
 from texthygiene.cli import EXIT_CLEAN, EXIT_ERROR, EXIT_FINDINGS, main
 
-ZWSP = "​"
+ZWSP = "\u200b"
 
 
 def write(tmp_path, name, text, encoding="utf-8"):
@@ -21,6 +21,19 @@ def test_inspect_exit_codes(tmp_path, capsys):
     dirty_file = write(tmp_path, "dirty.txt", f"hel{ZWSP}lo\n")
     assert main(["inspect", str(clean_file)]) == EXIT_CLEAN
     assert main(["inspect", str(dirty_file)]) == EXIT_FINDINGS
+
+
+def test_report_only_findings_do_not_fail(tmp_path, capsys):
+    """Exit status answers "would clean modify this?", so advisory findings pass.
+
+    Without this, a file whose invisible characters are all legitimate - an emoji
+    fixture, a doc containing RTL - could never satisfy the hook.
+    """
+    emoji = write(tmp_path, "emoji.txt", "\U0001F468\u200d\U0001F469\u200d\U0001F467")
+    assert main(["inspect", str(emoji), "--profile", "prose"]) == EXIT_CLEAN
+    assert "report" in capsys.readouterr().out, "findings must still be printed"
+    # The same file under `code`, which does strip those joiners, must fail.
+    assert main(["inspect", str(emoji), "--profile", "code"]) == EXIT_FINDINGS
 
 
 def test_error_exit_code_is_distinct_from_findings(tmp_path, capsys):
@@ -100,8 +113,8 @@ def test_stdin_roundtrip():
     assert proc.stdout == b"ab"
 
 
-@pytest.mark.parametrize("profile,expected", [("prose", "a b"), ("code", "a b")])
+@pytest.mark.parametrize("profile,expected", [("prose", "a\u00a0b"), ("code", "a b")])
 def test_profile_flag(tmp_path, capsys, profile, expected):
-    path = write(tmp_path, "d.txt", "a b")
+    path = write(tmp_path, "d.txt", "a\u00a0b")
     main(["clean", str(path), "--profile", profile])
     assert capsys.readouterr().out == expected
